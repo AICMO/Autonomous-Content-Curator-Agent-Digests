@@ -9,11 +9,18 @@ on:
         description: 'Hours to look back'
         required: false
         default: '24'
-      skip_publish:
-        description: 'Skip publish step'
-        required: false
+      publish_telegram:
+        description: 'Publish to Telegram'
         type: boolean
-        default: false
+        default: true
+      publish_ghost:
+        description: 'Publish to Ghost'
+        type: boolean
+        default: true
+      publish_substack:
+        description: 'Publish to Substack'
+        type: boolean
+        default: true
 
 concurrency:
   group: telegram-pipeline
@@ -23,17 +30,20 @@ permissions:
   contents: read
   id-token: write  # Required for Claude Code Action OIDC
 
-jobs:
-  process:
-    runs-on: ubuntu-latest
-    env:
-      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-      TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
-      TELEGRAM_PUBLISH_CHANNEL: ${{ vars.TELEGRAM_PUBLISH_CHANNEL }}
-      SUBSTACK_COOKIE: ${{ secrets.SUBSTACK_COOKIE }}
-      SUBSTACK_PUBLICATION_URL: ${{ vars.SUBSTACK_PUBLICATION_URL }}
+env:
+  TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+  TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+  TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
+  TELEGRAM_PUBLISH_CHANNEL: ${{ vars.TELEGRAM_PUBLISH_CHANNEL }}
+  GHOST_URL: ${{ vars.GHOST_URL }}
+  GHOST_ADMIN_API_KEY: ${{ secrets.GHOST_ADMIN_API_KEY }}
+  SUBSTACK_COOKIE: ${{ secrets.SUBSTACK_COOKIE }}
+  SUBSTACK_PUBLICATION_URL: ${{ vars.SUBSTACK_PUBLICATION_URL }}
 
+jobs:
+  # --- Read channels + generate both digests ---
+  curate:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -49,13 +59,12 @@ jobs:
           pip install -r requirements.txt
           python telegram.py --read --since ${{ github.event.inputs.since_hours || '24' }}
 
-      # --- LLM: Telegram digest ---
       - name: Generate Telegram digest
         uses: AICMO/llm-call-action@v1
         with:
           prompt_file: .github/prompts/curate-digest-telegram.md
           data_file: /tmp/telegram_messages.json
-          output_file: /tmp/llm_response.txt
+          output_file: /tmp/telegram_digest.txt
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           provider: ${{ vars.LLM_PROVIDER || 'claude' }}
           model: ${{ vars.LLM_MODEL || 'claude-sonnet-4-6' }}
@@ -67,32 +76,86 @@ jobs:
           vertex_project: ${{ vars.VERTEX_PROJECT }}
           vertex_region: ${{ vars.VERTEX_REGION }}
 
-      # --- Publish to Telegram ---
-      - name: Publish to Telegram
-        if: ${{ github.event.inputs.skip_publish != 'true' }}
-        working-directory: agent/integrations/telegram
-        run: python telegram.py --post
+      - name: Generate blog digest
+        uses: AICMO/llm-call-action@v1
+        with:
+          prompt_file: .github/prompts/curate-digest-substack.md
+          data_file: /tmp/telegram_messages.json
+          output_file: /tmp/blog_digest.txt
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          provider: ${{ vars.LLM_PROVIDER || 'claude' }}
+          model: ${{ vars.LLM_MODEL || 'claude-sonnet-4-6' }}
+          max_tokens: ${{ vars.LLM_MAX_TOKENS || '12288' }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          google_api_key: ${{ secrets.GOOGLE_API_KEY }}
+          google_application_credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+          vertex_project: ${{ vars.VERTEX_PROJECT }}
+          vertex_region: ${{ vars.VERTEX_REGION }}
 
-      # # --- LLM: Substack digest ---
-      # - name: Generate Substack digest
-      #   uses: AICMO/llm-call-action@v1
-      #   with:
-      #     prompt_file: .github/prompts/curate-digest-substack.md
-      #     data_file: /tmp/telegram_messages.json
-      #     output_file: /tmp/llm_response.txt
-      #     claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      #     provider: ${{ vars.LLM_PROVIDER || 'claude' }}
-      #     model: ${{ vars.LLM_MODEL || 'claude-sonnet-4-6' }}
-      #     max_tokens: ${{ vars.LLM_MAX_TOKENS || '12288' }}
-      #     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-      #     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-      #     google_api_key: ${{ secrets.GOOGLE_API_KEY }}
-      #     google_application_credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
-      #     vertex_project: ${{ vars.VERTEX_PROJECT }}
-      #     vertex_region: ${{ vars.VERTEX_REGION }}
-      #
-      # - name: Publish to Substack
-      #   if: ${{ github.event.inputs.skip_publish != 'true' }}
-      #   run: |
-      #     pip install -r agent/integrations/substack/requirements.txt
-      #     python agent/integrations/substack/substack.py --post
+      - name: Upload digests
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests
+          path: |
+            /tmp/telegram_digest.txt
+            /tmp/blog_digest.txt
+          retention-days: 1
+
+  # --- Publish to Telegram ---
+  publish-telegram:
+    needs: curate
+    if: ${{ github.event.inputs.publish_telegram != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v7
+        with:
+          name: digests
+      - name: Publish
+        run: |
+          cp telegram_digest.txt /tmp/llm_response.txt
+          cd agent/integrations/telegram
+          pip install -r requirements.txt
+          python telegram.py --post
+
+  # --- Publish to Ghost ---
+  publish-ghost:
+    needs: curate
+    if: ${{ github.event.inputs.publish_ghost != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v7
+        with:
+          name: digests
+      - name: Publish
+        run: |
+          cp blog_digest.txt /tmp/llm_response.txt
+          pip install -r agent/integrations/ghost/requirements.txt
+          python agent/integrations/ghost/ghost.py --post
+
+  # --- Publish to Substack ---
+  publish-substack:
+    needs: curate
+    if: ${{ github.event.inputs.publish_substack != 'false' }}
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v7
+        with:
+          name: digests
+      - name: Publish
+        run: |
+          cp blog_digest.txt /tmp/llm_response.txt
+          pip install -r agent/integrations/substack/requirements.txt
+          python agent/integrations/substack/substack.py --post

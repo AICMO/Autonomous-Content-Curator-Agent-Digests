@@ -1,0 +1,59 @@
+services:
+  # Reverse proxy — terminates SSL via Let's Encrypt, forwards to Ghost
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    command: caddy reverse-proxy --from ${GHOST_FQDN} --to ghost:2368 --internal-certs
+    depends_on:
+      - ghost
+
+  # Blog engine — internal only, not exposed to the internet
+  ghost:
+    image: ghost:6
+    container_name: ghost
+    restart: always
+    expose:
+      - "2368"
+    environment:
+      url: ${GHOST_URL}
+      database__client: mysql
+      database__connection__host: ghost-db
+      database__connection__user: ${MYSQL_USER}
+      database__connection__password: ${MYSQL_PASSWORD}
+      database__connection__database: ${MYSQL_DATABASE}
+    volumes:
+      - ghost_content:/var/lib/ghost/content
+    depends_on:
+      ghost-db:
+        condition: service_healthy
+
+  # Database — persistent storage for all Ghost content
+  ghost-db:
+    image: mysql:9
+    container_name: ghost-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - ghost_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  ghost_content:
+  ghost_db:
+  caddy_data:
+  caddy_config:
