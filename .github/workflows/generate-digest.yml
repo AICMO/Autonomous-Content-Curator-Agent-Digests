@@ -102,7 +102,7 @@ jobs:
           google_application_credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
           vertex_project: ${{ vars.VERTEX_PROJECT }}
           vertex_region: ${{ vars.VERTEX_REGION }}
-          max_turns: '5'
+          max_turns: '12'
           claude_tools: 'Read'
 
       - uses: actions/upload-artifact@v7
@@ -139,7 +139,7 @@ jobs:
           google_application_credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
           vertex_project: ${{ vars.VERTEX_PROJECT }}
           vertex_region: ${{ vars.VERTEX_REGION }}
-          max_turns: '5'
+          max_turns: '12'
           claude_tools: 'Read'
 
       - uses: actions/upload-artifact@v7
