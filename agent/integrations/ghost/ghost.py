@@ -54,8 +54,10 @@ class GhostApi:
         self.api_url = api_url.rstrip("/")
         self.admin_url = f"{self.api_url}/ghost/api/admin"
 
-        # Verify connection
+        # Verify connection and get default newsletter
         self._get("/site/")
+        newsletters = self._get("/newsletters/").get("newsletters", [])
+        self.newsletter_slug = newsletters[0]["slug"] if newsletters else None
         print(f"Connected to {self.api_url}")
 
     def _make_token(self):
@@ -92,16 +94,21 @@ class GhostApi:
     def _put(self, path, **kwargs):
         return self._handle(requests.put(f"{self.admin_url}{path}", headers=self._headers(), **kwargs))
 
-    def create_post(self, title: str, lexical: str, status: str = "draft"):
-        """Create a post. status: 'draft' or 'published'."""
-        payload = {
-            "posts": [{
-                "title": title,
-                "lexical": lexical,
-                "status": status,
-            }]
+    def create_post(self, title: str, lexical: str, status: str = "draft", newsletter_slug: str = None):
+        """Create a post. status: 'draft' or 'published'. newsletter_slug sends email to subscribers."""
+        post = {
+            "title": title,
+            "lexical": lexical,
+            "status": status,
         }
-        return self._post("/posts/", json=payload)
+        if newsletter_slug and status == "published":
+            post["email_segment"] = "all"
+
+        path = "/posts/"
+        if newsletter_slug and status == "published":
+            path = f"/posts/?newsletter={newsletter_slug}"
+
+        return self._post(path, json={"posts": [post]})
 
 
 # ============================================================
@@ -203,10 +210,37 @@ def html_to_lexical(html: str) -> str:
 
 
 # ============================================================
+# Title prefix
+# ============================================================
+
+def _digest_title(since_hours: float = 24, start_date: str = None, end_date: str = None) -> str:
+    """Build digest title from time range. e.g. '[Daily] AI Digest — March 10, 2026'."""
+    start_date = start_date or None  # treat empty string as None
+    end_date = end_date or None
+    if start_date:
+        end = datetime.strptime(end_date, "%Y-%m-%d") if end_date else datetime.now(timezone.utc)
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        span_hours = (end - start).total_seconds() / 3600 + 24  # include full end day
+        date_str = end.strftime("%B %d, %Y")
+    else:
+        span_hours = since_hours
+        date_str = datetime.now(timezone.utc).strftime("%B %d, %Y")
+
+    if span_hours <= 24:
+        prefix = "[Daily] "
+    elif span_hours <= 168:
+        prefix = "[Weekly] "
+    else:
+        prefix = ""
+
+    return f"{prefix}AI Digest — {date_str}"
+
+
+# ============================================================
 # CLI
 # ============================================================
 
-def cmd_post(draft_only: bool = False, custom_title: str = None):
+def cmd_post(draft_only: bool = False, custom_title: str = None, since_hours: float = 24, start_date: str = None, end_date: str = None):
     if not LLM_RESPONSE_TMP.exists():
         print(f"Error: {LLM_RESPONSE_TMP} not found. Run the LLM pipeline first.")
         sys.exit(1)
@@ -231,13 +265,14 @@ def cmd_post(draft_only: bool = False, custom_title: str = None):
     print(f"Connecting to Ghost ({api_url})...")
     api = GhostApi(api_url=api_url, admin_api_key=admin_key)
 
-    today = datetime.now(timezone.utc).strftime("%B %d, %Y")
-    title = custom_title or f"[Daily] AI Digest — {today}"
+    title = custom_title or _digest_title(since_hours, start_date, end_date)
     lexical = html_to_lexical(digest_text)
     print(f"Content: {len(digest_text)} chars → {len(lexical)} chars Lexical")
 
     status = "draft" if draft_only else "published"
-    result = api.create_post(title=title, lexical=lexical, status=status)
+    result = api.create_post(title=title, lexical=lexical, status=status, newsletter_slug=api.newsletter_slug)
+    if api.newsletter_slug and status == "published":
+        print(f"Email sent to newsletter: {api.newsletter_slug}")
 
     post = result["posts"][0]
     if draft_only:
@@ -253,13 +288,16 @@ def main():
     parser.add_argument("--post", action="store_true", help="Publish /tmp/llm_response.txt to Ghost")
     parser.add_argument("--draft", action="store_true", help="Create draft only, don't publish")
     parser.add_argument("--title", type=str, help="Custom post title (default: AI Digest — <date>)")
+    parser.add_argument("--since-hours", type=float, default=24, help="Hours of content (for title prefix)")
+    parser.add_argument("--start-date", type=str, help="Start date YYYY-MM-DD (for title)")
+    parser.add_argument("--end-date", type=str, help="End date YYYY-MM-DD (for title)")
     args = parser.parse_args()
 
     if not args.post:
         parser.print_help()
         sys.exit(1)
 
-    cmd_post(draft_only=args.draft, custom_title=args.title)
+    cmd_post(draft_only=args.draft, custom_title=args.title, since_hours=args.since_hours, start_date=args.start_date, end_date=args.end_date)
 
 
 if __name__ == "__main__":

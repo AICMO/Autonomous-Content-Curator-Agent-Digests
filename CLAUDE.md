@@ -42,6 +42,7 @@ Steps 2a/2b run in parallel. Steps 3a/3b/3c run in parallel.
 - `ANTHROPIC_API_KEY` — Claude API key (fallback)
 - `GHOST_URL` — Ghost domain without https:// (e.g. `aicmo.blog`)
 - `GHOST_ADMIN_API_KEY` — Ghost Admin API key (format: `{id}:{secret}`)
+
 - `SUBSTACK_COOKIE` — connect.sid cookie from browser (see substack/README.md)
 - `SUBSTACK_PUBLICATION_URL` — e.g. `https://howai.substack.com`
 

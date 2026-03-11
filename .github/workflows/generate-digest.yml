@@ -43,6 +43,7 @@ env:
   TELEGRAM_PUBLISH_CHANNEL: ${{ vars.TELEGRAM_PUBLISH_CHANNEL }}
   GHOST_URL: ${{ vars.GHOST_URL }}
   GHOST_ADMIN_API_KEY: ${{ secrets.GHOST_ADMIN_API_KEY }}
+
   SUBSTACK_COOKIE: ${{ secrets.SUBSTACK_COOKIE }}
   SUBSTACK_PUBLICATION_URL: ${{ vars.SUBSTACK_PUBLICATION_URL }}
 
@@ -185,7 +186,10 @@ jobs:
         run: |
           cp blog_digest.txt /tmp/llm_response.txt
           pip install -r agent/integrations/ghost/requirements.txt
-          python agent/integrations/ghost/ghost.py --post
+          python agent/integrations/ghost/ghost.py --post \
+            --since-hours ${{ github.event.inputs.since_hours || '24' }} \
+            --start-date "${{ github.event.inputs.start_date }}" \
+            --end-date "${{ github.event.inputs.end_date }}"
 
   # --- Step 3c: Publish to Substack ---
   publish-substack:
@@ -204,4 +208,7 @@ jobs:
         run: |
           cp blog_digest.txt /tmp/llm_response.txt
           pip install -r agent/integrations/substack/requirements.txt
-          python agent/integrations/substack/substack.py --post
+          python agent/integrations/substack/substack.py --post \
+            --since-hours ${{ github.event.inputs.since_hours || '24' }} \
+            --start-date "${{ github.event.inputs.start_date }}" \
+            --end-date "${{ github.event.inputs.end_date }}"

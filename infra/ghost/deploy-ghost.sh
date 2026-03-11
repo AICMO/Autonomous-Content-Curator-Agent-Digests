@@ -44,13 +44,6 @@ if ! command -v docker &> /dev/null; then
   systemctl enable docker
 fi
 
-# Prevent Docker from bypassing UFW by disabling iptables manipulation
-if ! grep -q '"iptables": false' /etc/docker/daemon.json 2>/dev/null; then
-  echo '{"iptables": false}' > /etc/docker/daemon.json
-  systemctl restart docker
-  echo "Docker iptables disabled — UFW controls all port access"
-fi
-
 # Install Docker Compose plugin if not present
 if ! docker compose version &> /dev/null; then
   echo "Installing Docker Compose plugin..."
@@ -115,30 +108,14 @@ echo ""
 echo "Once DNS propagates, Cloudflare will handle SSL."
 echo ""
 
-# ── Security ──────────────────────────────────────
-
-# UFW — only allow Cloudflare IPs on 80/443 (skip if already configured)
-if command -v ufw &> /dev/null && ! ufw status | grep -q "23232/tcp"; then
-  echo "=== Configuring Firewall ==="
-  ufw --force reset
-  ufw default deny incoming
-  ufw default allow outgoing
-  ufw allow 22/tcp      # SSH
-  ufw allow 23232/tcp   # SSH (alt)
-
-  # Fetch Cloudflare IP ranges
-  CF_IPV4=$(curl -s https://www.cloudflare.com/ips-v4)
-  CF_IPV6=$(curl -s https://www.cloudflare.com/ips-v6)
-  if [ -z "$CF_IPV4" ]; then
-    echo "Failed to fetch Cloudflare IPs — check connection" && exit 1
-  fi
-
-  for ip in $CF_IPV4 $CF_IPV6; do
-    ufw allow from "$ip" to any port 80,443 proto tcp
-  done
-
-  ufw --force enable
-  echo "UFW enabled (HTTP/HTTPS restricted to Cloudflare IPs)"
-fi
-
-echo "Ghost admin access: restricted via Cloudflare WAF"
+echo "=== Newsletter Emails (Mailgun) ==="
+echo "To send newsletter emails to subscribers:"
+echo "  1. Create a Mailgun account: https://www.mailgun.com"
+echo "  2. Add and verify your domain (e.g. mg.${GHOST_FQDN:-example.com})"
+echo "  3. Get your private API key: https://app.mailgun.com/settings/api_security"
+echo "  4. In Ghost admin → Settings → Mailgun, enter:"
+echo "     - Mailgun domain: your verified domain (just the domain, not full URL)"
+echo "     - Mailgun API key: your private API key"
+echo "     - Mailgun region: US or EU (must match your Mailgun account)"
+echo ""
+echo "NOTE: Run 'bash /path/to/ubuntu_security_hardening.sh' for firewall, SSH hardening, and fail2ban."
