@@ -108,8 +108,8 @@ class GhostApi:
             # Step 2: publish with newsletter (triggers email)
             return self._put(
                 f"/posts/{post['id']}/",
-                json={"posts": [{"status": "published", "email_segment": "all", "updated_at": post["updated_at"]}]},
-                params={"newsletter": newsletter_slug},
+                json={"posts": [{"status": "published", "updated_at": post["updated_at"]}]},
+                params={"newsletter": newsletter_slug, "email_segment": "all"},
             )
         else:
             return self._post("/posts/", json={"posts": [{

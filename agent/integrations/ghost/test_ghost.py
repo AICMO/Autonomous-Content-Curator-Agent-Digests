@@ -259,6 +259,8 @@ class TestGhostApi:
         result = api.create_post(title="Test", lexical="{}", status="published", newsletter_slug="default")
         assert result["posts"][0]["url"] == "https://test.ghost.io/p/1"
         mock_requests.put.assert_called_once()
+        put_kwargs = mock_requests.put.call_args
+        assert put_kwargs.kwargs["params"] == {"newsletter": "default", "email_segment": "all"}
 
 
 # ============================================================
