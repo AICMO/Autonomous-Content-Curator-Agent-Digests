@@ -152,6 +152,34 @@ if command -v docker &> /dev/null; then
   else
     echo "Docker iptables already disabled — skipping"
   fi
+
+  # NAT + forwarding for Docker containers (required when iptables: false)
+  # Without this, containers cannot make outbound connections.
+  BEFORE_RULES=/etc/ufw/before.rules
+  if ! grep -q "Docker container NAT" "$BEFORE_RULES" 2>/dev/null; then
+    DOCKER_SUBNET=$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null || echo "172.17.0.0/16")
+    EXT_IF=$(ip route | awk '/default/ {print $5; exit}')
+
+    # Add NAT masquerade at the top of before.rules
+    sed -i "1i\\
+# Docker container NAT\\
+*nat\\
+:POSTROUTING ACCEPT [0:0]\\
+-A POSTROUTING -s ${DOCKER_SUBNET} -o ${EXT_IF} -j MASQUERADE\\
+COMMIT\\
+" "$BEFORE_RULES"
+
+    # Add forwarding rules before the final COMMIT in the *filter section
+    sed -i "/^# don't delete the 'COMMIT' line/i\\
+# Docker container forwarding\\
+-A ufw-before-forward -s ${DOCKER_SUBNET} -o ${EXT_IF} -j ACCEPT\\
+-A ufw-before-forward -d ${DOCKER_SUBNET} -m state --state RELATED,ESTABLISHED -j ACCEPT" "$BEFORE_RULES"
+
+    ufw reload
+    echo "Docker NAT + forwarding rules added to UFW (subnet: ${DOCKER_SUBNET}, interface: ${EXT_IF})"
+  else
+    echo "Docker NAT rules already in UFW — skipping"
+  fi
 fi
 
 # ── 6. fail2ban ──────────────────────────────────
