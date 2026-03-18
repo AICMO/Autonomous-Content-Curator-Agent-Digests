@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────
-# One-Click Hetzner VPS Setup
+# One-Click Hetzner Server Setup [connection stack: Tailscale + Mosh/SSH + Termius + sshid.io hardware keys]
 #
 # Provisions a fully hardened Ubuntu server accessible only via Tailscale.
 # No SSH exposed on public IP — connect with Mosh/SSH through Tailscale.
@@ -19,7 +19,7 @@
 # Prerequisites:
 #   brew install hcloud
 #   export HCLOUD_TOKEN="..."                      # https://console.hetzner.cloud > Security > API Tokens (Read & Write)
-#   export TAILSCALE_AUTH_KEY="tskey-auth-..."      # https://login.tailscale.com/admin/settings/keys (reusable recommended)
+#   export TAILSCALE_API_KEY="tskey-api-..."         # https://login.tailscale.com/admin/settings/keys > API Keys
 #   SSH key uploaded to Hetzner:                   # https://console.hetzner.com > Security > SSH Keys
 #
 # Usage:
@@ -130,12 +130,34 @@ if [ -z "${HCLOUD_TOKEN:-}" ]; then
   echo "ERROR: HCLOUD_TOKEN is required -- https://console.hetzner.cloud > Security > API Tokens"
   exit 1
 fi
-if [ -z "${TAILSCALE_AUTH_KEY:-}" ]; then
-  echo "ERROR: TAILSCALE_AUTH_KEY is required -- https://login.tailscale.com/admin/settings/keys"
+if [ -z "${TAILSCALE_API_KEY:-}" ]; then
+  echo "ERROR: TAILSCALE_API_KEY is required -- https://login.tailscale.com/admin/settings/keys > API Keys"
   exit 1
 fi
 
 command -v hcloud &>/dev/null || { echo "ERROR: hcloud CLI not found -- brew install hcloud"; exit 1; }
+
+# Generate one-time Tailscale auth key (expires in 5 min)
+echo "--- Generating one-time Tailscale auth key ---"
+TS_RESPONSE=$(curl -s -X POST "https://api.tailscale.com/api/v2/tailnet/-/keys" \
+  -H "Authorization: Bearer ${TAILSCALE_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":true,"preauthorized":true}}},"expirySeconds":300}')
+
+TAILSCALE_AUTH_KEY=$(echo "$TS_RESPONSE" | grep -o '"key":"[^"]*"' | head -1 | cut -d'"' -f4)
+if [ -z "$TAILSCALE_AUTH_KEY" ]; then
+  echo "ERROR: Failed to generate Tailscale auth key"
+  echo "$TS_RESPONSE"
+  exit 1
+fi
+echo "One-time auth key generated (expires in 5 min)"
+
+# Check Tailscale hostname not taken
+if tailscale status 2>/dev/null | grep -q " ${SERVER_NAME} "; then
+  echo "ERROR: '${SERVER_NAME}' already exists in Tailscale"
+  echo "  Options: use a different name, remove at https://login.tailscale.com/admin/machines, or wait for ephemeral auto-removal (~90 min)"
+  exit 1
+fi
 
 # Verify SSH key exists in Hetzner
 hcloud ssh-key describe "$HCLOUD_SSH_KEY" &>/dev/null 2>&1 \
@@ -278,7 +300,12 @@ write_files:
       echo "--- Configuring SSH ---"
       sed "s/__TS_IP__/$TS_IP/" /etc/ssh/sshd_config.tpl > /etc/ssh/sshd_config
       rm /etc/ssh/sshd_config.tpl
-      systemctl restart sshd
+
+      # Add SSH.id keys (Termius device keys via Tailscale SSH)
+      KEYS_DIR="/home/__SSH_USER__/.ssh"
+      curl -fs https://sshid.io/evios/ECDSA-SK >> "$KEYS_DIR/authorized_keys" || true
+
+      systemctl restart ssh
       echo "SSH bound to $TS_IP"
 
       # ── UFW (defense-in-depth) ─────────────────
@@ -383,14 +410,29 @@ sed_inplace \
 
 # ── Create Server ───────────────────────────────
 echo "--- Creating server ---"
-hcloud server create \
+if ! hcloud server create \
   --name "$SERVER_NAME" \
   --type "$SERVER_TYPE" \
   --image ubuntu-24.04 \
   --location "$SERVER_LOCATION" \
   --firewall "$FW_NAME" \
   --ssh-key "$HCLOUD_SSH_KEY" \
-  --user-data-from-file "$CLOUD_INIT"
+  --user-data-from-file "$CLOUD_INIT" 2>&1; then
+  echo ""
+  echo "ERROR: Server creation failed."
+  echo "  Common causes:"
+  echo "    - resource_unavailable: $SERVER_LOCATION is out of $SERVER_TYPE instances"
+  echo "    - uniqueness_error: server '$SERVER_NAME' already exists"
+  echo ""
+  echo "  Try a different location or server type:"
+  echo "    HCLOUD_LOCATION=fsn1 $0 $SERVER_NAME"
+  echo "    HCLOUD_LOCATION=nbg1 $0 $SERVER_NAME"
+  echo "    HCLOUD_SERVER_TYPE=cx22 $0 $SERVER_NAME"
+  echo ""
+  echo "  Available locations: hcloud location list"
+  echo "  Available types:     hcloud server-type list"
+  exit 1
+fi
 
 SERVER_IP=$(hcloud server ip "$SERVER_NAME")
 
