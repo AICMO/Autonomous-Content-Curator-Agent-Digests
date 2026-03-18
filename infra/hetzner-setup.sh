@@ -37,11 +37,12 @@
 #   TIMEZONE=Europe/Kyiv HCLOUD_SSH_KEY=other_key bash infra/hetzner-setup.sh my-server
 #
 # Config (env vars):
-#   HCLOUD_SERVER_TYPE  — server type              (default: cx23)
-#   HCLOUD_LOCATION     — datacenter location      (default: hel1)
-#   HCLOUD_SSH_KEY      — SSH key name in Hetzner  (default: evios_id_ed25519.pub)
-#   TIMEZONE            — server timezone          (default: UTC)
-#   CLOUDFLARE_ONLY     — restrict HTTP/S to CF    (default: true)
+#   SSH_USER            — server username           (default: evios)
+#   HCLOUD_SERVER_TYPE  — server type               (default: cx23)
+#   HCLOUD_LOCATION     — datacenter location       (default: hel1)
+#   HCLOUD_SSH_KEY      — SSH key name in Hetzner   (default: evios_id_ed25519.pub)
+#   TIMEZONE            — server timezone           (default: UTC)
+#   CLOUDFLARE_ONLY     — restrict HTTP/S to CF     (default: true)
 #
 # Destroy:
 #   hcloud server delete <server-name>
@@ -119,7 +120,7 @@ set -eo pipefail
 SERVER_NAME="${1:?Usage: bash infra/hetzner-setup.sh <server-name>}"
 SERVER_TYPE="${HCLOUD_SERVER_TYPE:-cx23}"         # 2 vCPU, 4GB, 40GB NVMe (~€3/mo)
 SERVER_LOCATION="${HCLOUD_LOCATION:-hel1}"        # Helsinki, FI
-SSH_USER="evios"
+SSH_USER="${SSH_USER:-evios}"
 HCLOUD_SSH_KEY="${HCLOUD_SSH_KEY:-evios_id_ed25519.pub}"
 TIMEZONE="${TIMEZONE:-UTC}"
 CLOUDFLARE_ONLY="${CLOUDFLARE_ONLY:-true}"        # restrict HTTP/S to Cloudflare IPs
@@ -185,6 +186,8 @@ if ! hcloud firewall describe "$FW_NAME" &>/dev/null 2>&1; then
     --source-ips 0.0.0.0/0 --source-ips ::/0 --description "HTTP"
   hcloud firewall add-rule "$FW_NAME" --direction in --protocol tcp --port 443 \
     --source-ips 0.0.0.0/0 --source-ips ::/0 --description "HTTPS"
+  hcloud firewall add-rule "$FW_NAME" --direction in --protocol udp --port 41641 \
+    --source-ips 0.0.0.0/0 --source-ips ::/0 --description "Tailscale direct"
 else
   echo "Firewall '$FW_NAME' exists -- reusing"
 fi
@@ -292,7 +295,7 @@ write_files:
       # ── Tailscale ──────────────────────────────
       echo "--- Installing Tailscale ---"
       curl -fsSL https://tailscale.com/install.sh | sh
-      tailscale up --auth-key=__TAILSCALE_AUTH_KEY__ --ssh --hostname=__SERVER_NAME__
+      tailscale up --auth-key=__TAILSCALE_AUTH_KEY__ --ssh --hostname=__SERVER_NAME__ --advertise-tags=tag:server
       TS_IP=$(tailscale ip -4)
       echo "Tailscale connected: $TS_IP"
 
@@ -303,7 +306,7 @@ write_files:
 
       # Add SSH.id keys (Termius device keys via Tailscale SSH)
       KEYS_DIR="/home/__SSH_USER__/.ssh"
-      curl -fs https://sshid.io/evios/ECDSA-SK >> "$KEYS_DIR/authorized_keys" || true
+      curl -fs https://sshid.io/__SSH_USER__/ECDSA-SK >> "$KEYS_DIR/authorized_keys" || true
 
       systemctl restart ssh
       echo "SSH bound to $TS_IP"
