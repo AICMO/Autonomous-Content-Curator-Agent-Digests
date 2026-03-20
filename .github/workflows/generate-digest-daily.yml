@@ -30,6 +30,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write   # Required for auto-retry
   id-token: write  # Required for Claude Code Action OIDC
 
 env:
@@ -205,3 +206,16 @@ jobs:
           python agent/integrations/substack/substack.py --post \
             --start-date "${{ github.event.inputs.start_date }}" \
             --end-date "${{ github.event.inputs.end_date }}"
+
+  # --- Auto-retry on failure (up to 3 attempts) ---
+  retry:
+    needs: [generate-messenger, generate-blog, publish-telegram, publish-ghost, publish-substack]
+    if: always() && failure() && fromJSON(github.run_attempt) < 3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retry failed jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Attempt ${{ github.run_attempt }} failed -- retrying..."
+          gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/rerun-failed-jobs -X POST
