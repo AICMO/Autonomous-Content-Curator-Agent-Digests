@@ -21,6 +21,7 @@
 #      - Prompt for your FQDN
 #      - Generate random DB credentials in /opt/ghost/.env
 #      - Start Ghost + MySQL + Caddy (auto SSL) at /opt/ghost/
+#      - Enable auto-update on boot (pulls latest images via systemd)
 #
 #   4. Open https://<your-fqdn>/ghost to create admin account
 #
@@ -95,6 +96,17 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ "$SCRIPT_DIR" != "$GHOST_DIR" ]; then
   cp "$SCRIPT_DIR/docker-compose.yml" "$GHOST_DIR/docker-compose.yml"
+fi
+
+# Auto-update on boot:
+# 1. Docker restart:always brings containers up instantly (old images)
+# 2. 30s later this cron pulls latest ghost:6/mysql:9/caddy:2 images
+# 3. docker compose up -d recreates only containers whose image changed
+# Data volumes are untouched — only container binaries update
+CRON_JOB="@reboot sleep 30 && cd $GHOST_DIR && /usr/bin/docker compose pull --quiet && /usr/bin/docker compose up -d"
+if ! crontab -l 2>/dev/null | grep -qF "ghost"; then
+  (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+  echo "Added @reboot cron job (auto-pulls latest images on boot)"
 fi
 
 # Start

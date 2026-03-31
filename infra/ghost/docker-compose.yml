@@ -2,6 +2,7 @@ services:
   # Reverse proxy — terminates SSL via Let's Encrypt, forwards to Ghost
   caddy:
     image: caddy:2
+    pull_policy: always
     container_name: caddy
     restart: always
     ports:
@@ -17,6 +18,7 @@ services:
   # Blog engine — internal only, not exposed to the internet
   ghost:
     image: ghost:6
+    pull_policy: always
     container_name: ghost
     restart: always
     expose:
@@ -37,6 +39,7 @@ services:
   # Database — persistent storage for all Ghost content
   ghost-db:
     image: mysql:9
+    pull_policy: always
     container_name: ghost-db
     restart: always
     environment:
