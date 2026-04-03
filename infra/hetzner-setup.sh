@@ -13,9 +13,8 @@
 #   - Mosh, curl, jq, tmux, git
 #   - Hetzner HW firewall (80/443 only, no public SSH)
 #   - UFW: Cloudflare-only HTTP/S (default) + all traffic on tailscale0
-#   - Tailscale SSH as primary (identity-based auth via node keys, no SSH keys needed)
-#   - OpenSSH as dormant fallback (configured, disabled — start manually in emergencies)
-#   - sshid.io hardware keys in authorized_keys (only used by OpenSSH fallback, not Tailscale SSH)
+#   - OpenSSH bound to Tailscale IP (key-only, no root, no passwords)
+#   - sshid.io hardware keys for Termius mobile access
 #   - fail2ban, sysctl hardening, 180-day log retention
 #   - Auto-appends server to ~/.ssh/config
 #
@@ -81,8 +80,8 @@
 #   Server (cloud-init, first boot ~3 min):
 #     1. Creates 'evios' user with your SSH key
 #     2. Installs + upgrades system packages
-#     3. Installs Tailscale, joins your tailnet with --ssh
-#     4. Configures OpenSSH as dormant fallback (disabled, starts manually)
+#     3. Installs Tailscale, joins your tailnet
+#     4. Binds OpenSSH to Tailscale IP only (key-only, no root, sshid.io keys)
 #     5. Configures UFW (Cloudflare-only HTTP/S by default + everything on tailscale0)
 #     6. Installs Docker + Compose, configures iptables isolation + NAT
 #     7. Enables unattended security upgrades (auto-reboot at 02:00)
@@ -90,8 +89,8 @@
 #     9. Writes completion marker to /var/log/hetzner-setup-done
 #
 # Security:
-#   - Tailscale SSH: primary access, auth via node keys (no SSH keys needed), ACL-controlled
-#   - OpenSSH: dormant fallback, disabled by default, key-only, no root, sshid.io hardware keys
+#   - OpenSSH: bound to Tailscale IP, key-only, no root, sshid.io hardware keys
+#   - Tailscale: network layer only (no --ssh), all SSH via OpenSSH
 #   - UFW: Cloudflare-only HTTP/S (default) + all on tailscale0 (defense-in-depth)
 #   - Docker: iptables: false + explicit NAT rules (prevents bypassing UFW)
 #   - fail2ban: SSH brute-force protection (ban after 3 attempts for 1h)
@@ -269,22 +268,22 @@ write_files:
     content: |
       {"iptables": false}
 
-  # SSH config (dormant fallback — not started by default)
+  # SSH config (Tailscale IP filled in at boot)
   - path: /etc/ssh/sshd_config.tpl
     content: |
-      ListenAddress 0.0.0.0
+      ListenAddress __TS_IP__
       PermitRootLogin no
       AllowUsers __SSH_USER__
       PasswordAuthentication no
       PermitEmptyPasswords no
       KbdInteractiveAuthentication no
-      MaxAuthTries 3
+      MaxAuthTries 6
       UsePAM no
       X11Forwarding no
       AllowTcpForwarding no
       AllowAgentForwarding no
       PrintMotd no
-      AuthorizedKeysFile .ssh/authorized_keys
+      AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys_sshid .ssh/authorized_keys_sshid
       AcceptEnv LANG LC_*
       Subsystem sftp /usr/lib/openssh/sftp-server
 
@@ -299,22 +298,24 @@ write_files:
       # ── Tailscale ──────────────────────────────
       echo "--- Installing Tailscale ---"
       curl -fsSL https://tailscale.com/install.sh | sh
-      tailscale up --auth-key=__TAILSCALE_AUTH_KEY__ --ssh --hostname=__SERVER_NAME__ --advertise-tags=tag:server
+      tailscale up --auth-key=__TAILSCALE_AUTH_KEY__ --hostname=__SERVER_NAME__ --advertise-tags=tag:server
       TS_IP=$(tailscale ip -4)
       echo "Tailscale connected: $TS_IP"
 
-      # ── SSH: configure and disable (dormant fallback) ──
-      echo "--- Configuring SSH (dormant) ---"
-      cp /etc/ssh/sshd_config.tpl /etc/ssh/sshd_config
+      # ── SSH: bind to Tailscale IP ──────────────
+      echo "--- Configuring SSH ---"
+      usermod -p '*' __SSH_USER__
+      sed "s/__TS_IP__/$TS_IP/" /etc/ssh/sshd_config.tpl > /etc/ssh/sshd_config
       rm /etc/ssh/sshd_config.tpl
-      systemctl stop ssh.socket ssh.service
-      systemctl disable ssh.socket ssh.service
-      echo "OpenSSH configured but disabled (Tailscale SSH is primary)"
+      systemctl restart ssh
+      echo "SSH bound to $TS_IP (key-only, no root)"
 
-      # Add SSH.id hardware keys (only used by OpenSSH fallback, not Tailscale SSH)
-      # Tailscale SSH authenticates via node identity, not authorized_keys
+      # Add SSH.id hardware keys (Termius mobile access, separate file, no comments)
       KEYS_DIR="/home/__SSH_USER__/.ssh"
-      curl -fs https://sshid.io/__SSH_USER__/ECDSA-SK >> "$KEYS_DIR/authorized_keys" || true
+      echo "# __SSH_USER__ - sshid.io keys" > "$KEYS_DIR/authorized_keys_sshid"
+      curl -fs https://sshid.io/__SSH_USER__ | sed 's/ #.*$//' | grep -v '^ *$' >> "$KEYS_DIR/authorized_keys_sshid" || true
+      chown __SSH_USER__:__SSH_USER__ "$KEYS_DIR/authorized_keys_sshid"
+      chmod 600 "$KEYS_DIR/authorized_keys_sshid"
 
       # ── UFW (defense-in-depth) ─────────────────
       echo "--- Configuring UFW ---"
@@ -389,12 +390,9 @@ write_files:
       systemctl enable fail2ban && systemctl restart fail2ban
       sed -Ei 's/(.+rotate).+/\1 180/' /etc/logrotate.d/rsyslog
 
-      # ── Locale + Mosh wrapper (forces UTF-8 regardless of client) ──
+      # ── Locale (required for Mosh) ──────────────
       locale-gen en_US.UTF-8
       update-locale LANG=en_US.UTF-8
-      mv /usr/bin/mosh-server /usr/bin/mosh-server-real
-      printf '#!/bin/bash\nexport LANG=en_US.UTF-8\nexport LC_ALL=en_US.UTF-8\nexec /usr/bin/mosh-server-real "$@"\n' > /usr/bin/mosh-server
-      chmod +x /usr/bin/mosh-server
 
       # ── Claude Code ─────────────────────────────
       echo "--- Installing Claude Code ---"
@@ -482,11 +480,27 @@ while true; do
   sleep 5
 done
 
-# ── Append to ~/.ssh/config ────────────────────
+# ── Append to ~/.ssh/config-ephemeral-servers ──
+SSH_EPHEMERAL="$HOME/.ssh/config-ephemeral-servers"
 SSH_CONFIG="$HOME/.ssh/config"
 SSH_IDENTITY_FILE="${HCLOUD_SSH_KEY%.pub}"
-if ! grep -q "^Host ${SERVER_NAME}$" "$SSH_CONFIG" 2>/dev/null; then
-  cat >> "$SSH_CONFIG" <<SSHCONF
+
+# Ensure Include exists in main config
+if ! grep -q "Include.*config-ephemeral-servers" "$SSH_CONFIG" 2>/dev/null; then
+  TMPFILE=$(mktemp)
+  echo "Include ~/.ssh/config-ephemeral-servers" > "$TMPFILE"
+  [ -f "$SSH_CONFIG" ] && echo "" >> "$TMPFILE" && cat "$SSH_CONFIG" >> "$TMPFILE"
+  mv "$TMPFILE" "$SSH_CONFIG"
+  echo "Added Include to ~/.ssh/config"
+fi
+
+# Remove old entry + stale host key, then add fresh
+if grep -q "^Host ${SERVER_NAME}$" "$SSH_EPHEMERAL" 2>/dev/null; then
+  sed_inplace "/^# vps auto-spawned.*/{N;/Host ${SERVER_NAME}/,/^$/d;}" "$SSH_EPHEMERAL"
+  ssh-keygen -R "$SERVER_NAME" 2>/dev/null || true
+fi
+
+cat >> "$SSH_EPHEMERAL" <<SSHCONF
 
 # vps auto-spawned $(date +%Y-%m-%d)
 Host ${SERVER_NAME}
@@ -494,10 +508,8 @@ Host ${SERVER_NAME}
     User ${SSH_USER}
     IdentityFile ~/.ssh/${SSH_IDENTITY_FILE}
 SSHCONF
-  echo "Added ${SERVER_NAME} to ~/.ssh/config"
-else
-  echo "${SERVER_NAME} already in ~/.ssh/config -- skipping"
-fi
+ssh-keygen -R "$SERVER_NAME" 2>/dev/null || true
+echo "Added ${SERVER_NAME} to ~/.ssh/config-ephemeral-servers"
 
 echo ""
 echo "=== Server Created ==="
